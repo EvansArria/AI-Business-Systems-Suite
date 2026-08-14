@@ -32,14 +32,10 @@ st.set_page_config(
 # API KEY / ENVIRONMENT SETUP
 # =========================================================
 
-# Local development:
-# Reads OPENAI_API_KEY from the .env file.
 load_dotenv(override=True)
 
 api_key = os.getenv("OPENAI_API_KEY")
 
-# Streamlit Cloud fallback:
-# Reads OPENAI_API_KEY from Streamlit Secrets if needed.
 if not api_key:
     try:
         api_key = st.secrets["OPENAI_API_KEY"]
@@ -52,10 +48,6 @@ if not api_key:
 # =========================================================
 
 def clean_inline_markdown(text):
-    """
-    Removes simple Markdown symbols so exported
-    Word/PDF files look cleaner.
-    """
     return (
         text
         .replace("**", "")
@@ -64,12 +56,52 @@ def clean_inline_markdown(text):
     )
 
 
+def safe_filename(
+    value,
+    fallback="Business_Requirements",
+):
+    cleaned = (
+        value
+        .strip()
+        .replace(" ", "_")
+    )
+
+    cleaned = "".join(
+        char
+        for char in cleaned
+        if char.isalnum()
+        or char in ("_", "-")
+    )
+
+    return cleaned or fallback
+
+
+def generate_ai_text(
+    prompt,
+    spinner_message,
+):
+    client = OpenAI(
+        api_key=api_key
+    )
+
+    with st.spinner(
+        spinner_message
+    ):
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+        )
+
+    return response.output_text
+
+
 # =========================================================
-# WORD EXPORT FUNCTION
+# WORD EXPORT
 # =========================================================
 
 def create_word_document(
-    requirements_text,
+    document_title,
+    content_text,
     company,
     project_name,
 ):
@@ -78,7 +110,7 @@ def create_word_document(
     document = Document()
 
     document.add_heading(
-        "AI Business Analyst Copilot",
+        document_title,
         level=0,
     )
 
@@ -92,7 +124,7 @@ def create_word_document(
 
     document.add_paragraph("")
 
-    for line in requirements_text.splitlines():
+    for line in content_text.splitlines():
 
         cleaned_line = line.strip()
 
@@ -102,55 +134,51 @@ def create_word_document(
 
         if cleaned_line.startswith("### "):
 
-            heading_text = clean_inline_markdown(
-                cleaned_line[4:]
-            )
-
             document.add_heading(
-                heading_text,
+                clean_inline_markdown(
+                    cleaned_line[4:]
+                ),
                 level=3,
             )
 
         elif cleaned_line.startswith("## "):
 
-            heading_text = clean_inline_markdown(
-                cleaned_line[3:]
-            )
-
             document.add_heading(
-                heading_text,
+                clean_inline_markdown(
+                    cleaned_line[3:]
+                ),
                 level=2,
             )
 
         elif cleaned_line.startswith("# "):
 
-            heading_text = clean_inline_markdown(
-                cleaned_line[2:]
-            )
-
             document.add_heading(
-                heading_text,
+                clean_inline_markdown(
+                    cleaned_line[2:]
+                ),
                 level=1,
             )
 
         elif cleaned_line.startswith("- "):
 
-            bullet_text = clean_inline_markdown(
-                cleaned_line[2:]
-            )
-
             document.add_paragraph(
-                bullet_text,
+                clean_inline_markdown(
+                    cleaned_line[2:]
+                ),
                 style="List Bullet",
             )
 
         else:
 
             document.add_paragraph(
-                clean_inline_markdown(cleaned_line)
+                clean_inline_markdown(
+                    cleaned_line
+                )
             )
 
-    document.save(buffer)
+    document.save(
+        buffer
+    )
 
     buffer.seek(0)
 
@@ -158,11 +186,12 @@ def create_word_document(
 
 
 # =========================================================
-# PDF EXPORT FUNCTION
+# PDF EXPORT
 # =========================================================
 
 def create_pdf_document(
-    requirements_text,
+    document_title,
+    content_text,
     company,
     project_name,
 ):
@@ -183,113 +212,142 @@ def create_pdf_document(
 
     story.append(
         Paragraph(
-            "AI Business Analyst Copilot",
+            escape(
+                document_title
+            ),
             styles["Title"],
         )
     )
 
     story.append(
-        Spacer(1, 12)
+        Spacer(
+            1,
+            12,
+        )
     )
 
     story.append(
         Paragraph(
-            f"<b>Company:</b> {escape(company)}",
+            f"<b>Company:</b> "
+            f"{escape(company)}",
             styles["Normal"],
         )
     )
 
     story.append(
         Paragraph(
-            f"<b>Project:</b> {escape(project_name)}",
+            f"<b>Project:</b> "
+            f"{escape(project_name)}",
             styles["Normal"],
         )
     )
 
     story.append(
-        Spacer(1, 18)
+        Spacer(
+            1,
+            18,
+        )
     )
 
-    for line in requirements_text.splitlines():
+    for line in content_text.splitlines():
 
         cleaned_line = line.strip()
 
         if not cleaned_line:
+
             story.append(
-                Spacer(1, 8)
+                Spacer(
+                    1,
+                    8,
+                )
             )
+
             continue
 
-        if cleaned_line.startswith("### "):
-
-            heading_text = clean_inline_markdown(
-                cleaned_line[4:]
-            )
+        if cleaned_line.startswith(
+            "### "
+        ):
 
             story.append(
                 Paragraph(
-                    escape(heading_text),
+                    escape(
+                        clean_inline_markdown(
+                            cleaned_line[4:]
+                        )
+                    ),
                     styles["Heading3"],
                 )
             )
 
-        elif cleaned_line.startswith("## "):
-
-            heading_text = clean_inline_markdown(
-                cleaned_line[3:]
-            )
+        elif cleaned_line.startswith(
+            "## "
+        ):
 
             story.append(
                 Paragraph(
-                    escape(heading_text),
+                    escape(
+                        clean_inline_markdown(
+                            cleaned_line[3:]
+                        )
+                    ),
                     styles["Heading2"],
                 )
             )
 
-        elif cleaned_line.startswith("# "):
-
-            heading_text = clean_inline_markdown(
-                cleaned_line[2:]
-            )
+        elif cleaned_line.startswith(
+            "# "
+        ):
 
             story.append(
                 Paragraph(
-                    escape(heading_text),
+                    escape(
+                        clean_inline_markdown(
+                            cleaned_line[2:]
+                        )
+                    ),
                     styles["Heading1"],
                 )
             )
 
-        elif cleaned_line.startswith("- "):
-
-            bullet_text = clean_inline_markdown(
-                cleaned_line[2:]
-            )
+        elif cleaned_line.startswith(
+            "- "
+        ):
 
             story.append(
                 Paragraph(
-                    "&bull; " + escape(bullet_text),
+                    "&bull; "
+                    + escape(
+                        clean_inline_markdown(
+                            cleaned_line[2:]
+                        )
+                    ),
                     styles["Normal"],
                 )
             )
 
         else:
 
-            paragraph_text = clean_inline_markdown(
-                cleaned_line
-            )
-
             story.append(
                 Paragraph(
-                    escape(paragraph_text),
+                    escape(
+                        clean_inline_markdown(
+                            cleaned_line
+                        )
+                    ),
                     styles["Normal"],
                 )
             )
 
         story.append(
-            Spacer(1, 6)
+            Spacer(
+                1,
+                6,
+            )
         )
 
-    pdf.build(story)
+    pdf.build(
+        story
+    )
 
     buffer.seek(0)
 
@@ -297,36 +355,123 @@ def create_pdf_document(
 
 
 # =========================================================
-# SESSION STATE
-# Keeps generated content available after button actions.
+# REUSABLE DOWNLOAD BUTTONS
 # =========================================================
 
-if "generated_requirements" not in st.session_state:
-    st.session_state.generated_requirements = None
+def show_download_buttons(
+    document_title,
+    content_text,
+    company,
+    project_name,
+    filename_suffix,
+):
+    base_name = safe_filename(
+        project_name,
+        fallback=(
+            "Business_Analysis_Project"
+        ),
+    )
 
-if "generated_company" not in st.session_state:
-    st.session_state.generated_company = ""
+    word_file = create_word_document(
+        document_title,
+        content_text,
+        company,
+        project_name,
+    )
 
-if "generated_project_name" not in st.session_state:
-    st.session_state.generated_project_name = ""
+    pdf_file = create_pdf_document(
+        document_title,
+        content_text,
+        company,
+        project_name,
+    )
+
+    col1, col2, col3 = (
+        st.columns(3)
+    )
+
+    with col1:
+
+        st.download_button(
+            label="📘 Download Word",
+            data=word_file,
+            file_name=(
+                f"{base_name}_"
+                f"{filename_suffix}.docx"
+            ),
+            mime=(
+                "application/vnd."
+                "openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            use_container_width=True,
+        )
+
+    with col2:
+
+        st.download_button(
+            label="📕 Download PDF",
+            data=pdf_file,
+            file_name=(
+                f"{base_name}_"
+                f"{filename_suffix}.pdf"
+            ),
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+    with col3:
+
+        st.download_button(
+            label="📝 Download Markdown",
+            data=content_text,
+            file_name=(
+                f"{base_name}_"
+                f"{filename_suffix}.md"
+            ),
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+default_state = {
+    "generated_requirements": None,
+    "generated_company": "",
+    "generated_project_name": "",
+    "generated_user_stories": None,
+    "generated_test_cases": None,
+}
+
+for key, value in (
+    default_state.items()
+):
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 
 # =========================================================
 # APP HEADER
 # =========================================================
 
-st.title("🤖 AI Business Analyst Copilot")
+st.title(
+    "🤖 AI Business Analyst Copilot"
+)
 
 st.caption(
-    "Generate professional Business Analysis "
-    "documentation using AI."
+    "Generate professional "
+    "Business Analysis documentation "
+    "using AI."
 )
 
 st.divider()
 
 
 # =========================================================
-# BUSINESS REQUIREMENTS INPUT FORM
+# BUSINESS REQUIREMENTS INPUT
 # =========================================================
 
 st.subheader(
@@ -363,7 +508,7 @@ constraints = st.text_area(
 
 
 # =========================================================
-# GENERATE BUTTON
+# GENERATE BRD
 # =========================================================
 
 if st.button(
@@ -381,25 +526,27 @@ if st.button(
     if required_fields_missing:
 
         st.warning(
-            "Please complete Company, Project Name, "
-            "Business Problem, and Business Goal."
+            "Please complete Company, "
+            "Project Name, Business Problem, "
+            "and Business Goal."
         )
 
     elif not api_key:
 
         st.error(
             "The OpenAI API key was not found. "
-            "Check your .env file locally or "
-            "Streamlit Secrets in the live app."
+            "Check your .env file locally "
+            "or Streamlit Secrets in the "
+            "live app."
         )
 
     else:
 
-        prompt = f"""
+        brd_prompt = f"""
 You are a senior Business Systems Analyst.
 
-Create a professional Business Requirements Document
-using the information below.
+Create a professional Business Requirements
+Document using the information below.
 
 Company:
 {company}
@@ -443,13 +590,13 @@ Requirements:
 - Make the requirements specific to the
   information provided.
 
-- Number functional requirements using:
+- Number functional requirements using
   FR-001, FR-002, FR-003, etc.
 
-- Number non-functional requirements using:
+- Number non-functional requirements using
   NFR-001, NFR-002, NFR-003, etc.
 
-- Write user stories using this structure:
+- Write user stories using:
   "As a [user], I want [capability],
   so that [business benefit]."
 
@@ -465,66 +612,81 @@ Requirements:
 
         try:
 
-            client = OpenAI(
-                api_key=api_key
-            )
-
-            with st.spinner(
-                "Generating business requirements "
-                "with AI..."
-            ):
-
-                response = client.responses.create(
-                    model="gpt-4.1-mini",
-                    input=prompt,
+            requirements = (
+                generate_ai_text(
+                    brd_prompt,
+                    (
+                        "Generating business "
+                        "requirements with AI..."
+                    ),
                 )
-
-            requirements = response.output_text
+            )
 
             if not requirements:
 
                 st.error(
-                    "OpenAI returned an empty response. "
-                    "Please try again."
+                    "OpenAI returned an empty "
+                    "response. Please try again."
                 )
 
             else:
 
-                st.session_state.generated_requirements = (
-                    requirements
-                )
+                st.session_state[
+                    "generated_requirements"
+                ] = requirements
 
-                st.session_state.generated_company = (
-                    company
-                )
+                st.session_state[
+                    "generated_company"
+                ] = company
 
-                st.session_state.generated_project_name = (
-                    project_name
-                )
+                st.session_state[
+                    "generated_project_name"
+                ] = project_name
+
+                # Reset downstream artifacts
+                # when a new BRD is created.
+                st.session_state[
+                    "generated_user_stories"
+                ] = None
+
+                st.session_state[
+                    "generated_test_cases"
+                ] = None
 
         except Exception as error:
 
             st.error(
-                f"OpenAI connection error: {error}"
+                f"OpenAI connection error: "
+                f"{error}"
             )
 
 
 # =========================================================
-# DISPLAY GENERATED BRD
+# DISPLAY BRD
 # =========================================================
 
-if st.session_state.generated_requirements:
+if (
+    st.session_state[
+        "generated_requirements"
+    ]
+):
 
     requirements = (
-        st.session_state.generated_requirements
+        st.session_state[
+            "generated_requirements"
+        ]
     )
 
     generated_company = (
-        st.session_state.generated_company
+        st.session_state[
+            "generated_company"
+        ]
     )
 
     generated_project_name = (
-        st.session_state.generated_project_name
+        st.session_state[
+            "generated_project_name"
+        ]
     )
 
     st.success(
@@ -534,92 +696,381 @@ if st.session_state.generated_requirements:
     st.divider()
 
     st.header(
-        "📄 Generated Business Requirements Document"
+        "📄 Generated Business "
+        "Requirements Document"
     )
 
     st.markdown(
         requirements
     )
 
-
-    # =====================================================
-    # CREATE EXPORT FILES
-    # =====================================================
-
-    safe_project_name = (
-        generated_project_name
-        .strip()
-        .replace(" ", "_")
-    )
-
-    if not safe_project_name:
-        safe_project_name = "Business_Requirements"
-
-
-    word_file = create_word_document(
-        requirements,
-        generated_company,
-        generated_project_name,
-    )
-
-
-    pdf_file = create_pdf_document(
-        requirements,
-        generated_company,
-        generated_project_name,
-    )
-
-
-    # =====================================================
-    # DOWNLOAD BUTTONS
-    # =====================================================
-
-    st.divider()
-
     st.subheader(
         "📥 Export Business Requirements"
     )
 
-    col1, col2, col3 = st.columns(3)
+    show_download_buttons(
+        "Business Requirements Document",
+        requirements,
+        generated_company,
+        generated_project_name,
+        "BRD",
+    )
 
 
-    with col1:
+    # =====================================================
+    # JIRA-READY USER STORIES
+    # =====================================================
 
-        st.download_button(
-            label="📘 Download Word",
-            data=word_file,
-            file_name=(
-                f"{safe_project_name}_BRD.docx"
-            ),
-            mime=(
-                "application/vnd.openxmlformats-"
-                "officedocument.wordprocessingml.document"
-            ),
-            use_container_width=True,
+    st.divider()
+
+    st.header(
+        "📋 Jira-Ready User Stories"
+    )
+
+    st.caption(
+        "Generate implementation-ready "
+        "user stories from the approved "
+        "Business Requirements Document."
+    )
+
+    if st.button(
+        "🧩 Generate Jira User Stories",
+        use_container_width=True,
+    ):
+
+        if not api_key:
+
+            st.error(
+                "The OpenAI API key "
+                "was not found."
+            )
+
+        else:
+
+            stories_prompt = f"""
+You are a senior Business Analyst
+and Product Owner.
+
+Using ONLY the Business Requirements
+Document below, create a set of
+Jira-ready user stories.
+
+Company:
+{generated_company}
+
+Project:
+{generated_project_name}
+
+BUSINESS REQUIREMENTS DOCUMENT:
+
+{requirements}
+
+Create enough user stories to cover
+the major functional requirements
+without creating unnecessary duplicates.
+
+Use this exact Markdown structure
+for every story:
+
+## US-001 — [Concise Jira Summary]
+
+- Epic: [Logical epic name]
+- Priority: [High, Medium, or Low]
+- Story Points: [1, 2, 3, 5, or 8]
+- Linked Requirements:
+  [FR-### and/or NFR-###]
+
+### User Story
+
+As a [specific user/persona],
+I want [capability],
+so that [business benefit].
+
+### Acceptance Criteria
+
+1. Given [context], when [action],
+   then [measurable outcome].
+
+2. Given [context], when [action],
+   then [measurable outcome].
+
+3. Given [context], when [action],
+   then [measurable outcome].
+
+### Business Value
+
+[One concise sentence explaining
+why the story matters.]
+
+Rules:
+
+- Number stories sequentially:
+  US-001, US-002, etc.
+
+- Use requirements traceability
+  wherever possible.
+
+- Do not invent requirements that
+  are not supported by the BRD.
+
+- Write acceptance criteria in
+  Given/When/Then format.
+
+- Keep Jira summaries concise
+  and action-oriented.
+
+- Assign realistic story points
+  based on relative complexity.
+"""
+
+            try:
+
+                user_stories = (
+                    generate_ai_text(
+                        stories_prompt,
+                        (
+                            "Generating Jira-ready "
+                            "user stories..."
+                        ),
+                    )
+                )
+
+                if not user_stories:
+
+                    st.error(
+                        "OpenAI returned "
+                        "an empty response."
+                    )
+
+                else:
+
+                    st.session_state[
+                        "generated_user_stories"
+                    ] = user_stories
+
+                    st.session_state[
+                        "generated_test_cases"
+                    ] = None
+
+            except Exception as error:
+
+                st.error(
+                    "User story generation "
+                    f"error: {error}"
+                )
+
+
+    # =====================================================
+    # DISPLAY JIRA STORIES
+    # =====================================================
+
+    if (
+        st.session_state[
+            "generated_user_stories"
+        ]
+    ):
+
+        user_stories = (
+            st.session_state[
+                "generated_user_stories"
+            ]
+        )
+
+        st.success(
+            "Jira User Stories Generated"
+        )
+
+        st.markdown(
+            user_stories
+        )
+
+        st.subheader(
+            "📥 Export Jira User Stories"
+        )
+
+        show_download_buttons(
+            "Jira-Ready User Stories",
+            user_stories,
+            generated_company,
+            generated_project_name,
+            "Jira_User_Stories",
         )
 
 
-    with col2:
+        # =================================================
+        # QA TEST CASES
+        # =================================================
 
-        st.download_button(
-            label="📕 Download PDF",
-            data=pdf_file,
-            file_name=(
-                f"{safe_project_name}_BRD.pdf"
-            ),
-            mime="application/pdf",
-            use_container_width=True,
+        st.divider()
+
+        st.header(
+            "🧪 AI-Generated QA Test Cases"
         )
 
-
-    with col3:
-
-        st.download_button(
-            label="📝 Download Markdown",
-            data=requirements,
-            file_name=(
-                f"{safe_project_name}_BRD.md"
-            ),
-            mime="text/markdown",
-            use_container_width=True,
+        st.caption(
+            "Generate traceable functional "
+            "and negative test cases from "
+            "the BRD and Jira stories."
         )
+
+        if st.button(
+            "🔬 Generate QA Test Cases",
+            use_container_width=True,
+        ):
+
+            if not api_key:
+
+                st.error(
+                    "The OpenAI API key "
+                    "was not found."
+                )
+
+            else:
+
+                test_prompt = f"""
+You are a senior QA Analyst working
+with a Business Analyst and Product Owner.
+
+Create professional QA test cases using
+ONLY the Business Requirements Document
+and Jira user stories provided below.
+
+Company:
+{generated_company}
+
+Project:
+{generated_project_name}
+
+BUSINESS REQUIREMENTS DOCUMENT:
+
+{requirements}
+
+JIRA USER STORIES:
+
+{user_stories}
+
+Create test coverage for the important
+business flows, validation rules,
+acceptance criteria, and major
+negative scenarios.
+
+Use this exact Markdown structure
+for every test case:
+
+## TC-001 — [Concise Test Case Title]
+
+- Linked User Story: [US-###]
+- Linked Requirement:
+  [FR-### and/or NFR-###]
+- Priority: [High, Medium, or Low]
+- Test Type:
+  [Functional, Negative, Integration,
+  Security, or Performance]
+
+### Objective
+
+[What this test validates.]
+
+### Preconditions
+
+- [Required starting condition]
+
+### Test Steps
+
+1. [Action]
+2. [Action]
+3. [Action]
+
+### Expected Result
+
+[Specific measurable expected outcome.]
+
+Rules:
+
+- Number test cases sequentially:
+  TC-001, TC-002, etc.
+
+- Include positive and negative
+  coverage where appropriate.
+
+- Preserve traceability to user
+  stories and requirements.
+
+- Do not invent functionality not
+  supported by the source documents.
+
+- Make steps executable by
+  a QA tester.
+
+- Keep expected results objective
+  and testable.
+"""
+
+                try:
+
+                    test_cases = (
+                        generate_ai_text(
+                            test_prompt,
+                            (
+                                "Generating QA "
+                                "test cases..."
+                            ),
+                        )
+                    )
+
+                    if not test_cases:
+
+                        st.error(
+                            "OpenAI returned "
+                            "an empty response."
+                        )
+
+                    else:
+
+                        st.session_state[
+                            "generated_test_cases"
+                        ] = test_cases
+
+                except Exception as error:
+
+                    st.error(
+                        "Test case generation "
+                        f"error: {error}"
+                    )
+
+
+        # =================================================
+        # DISPLAY QA TEST CASES
+        # =================================================
+
+        if (
+            st.session_state[
+                "generated_test_cases"
+            ]
+        ):
+
+            test_cases = (
+                st.session_state[
+                    "generated_test_cases"
+                ]
+            )
+
+            st.success(
+                "QA Test Cases Generated"
+            )
+
+            st.markdown(
+                test_cases
+            )
+
+            st.subheader(
+                "📥 Export QA Test Cases"
+            )
+
+            show_download_buttons(
+                "QA Test Cases",
+                test_cases,
+                generated_company,
+                generated_project_name,
+                "QA_Test_Cases",
+            )
