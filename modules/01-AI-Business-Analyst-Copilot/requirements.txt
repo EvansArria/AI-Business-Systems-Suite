@@ -1,3 +1,5 @@
 streamlit
 openai
 python-dotenv
+python-docx
+reportlab
