@@ -1,4 +1,5 @@
 import os
+import re
 from io import BytesIO
 from xml.sax.saxutils import escape
 
@@ -48,6 +49,108 @@ def generate_ai_text(prompt, spinner_message):
             input=prompt,
         )
     return response.output_text
+
+
+
+# =========================================================
+# DASHBOARD METRIC HELPERS
+# =========================================================
+
+def count_unique_ids(text, prefix):
+    if not text:
+        return 0
+
+    pattern = rf"\b{re.escape(prefix)}-\d{{3}}\b"
+
+    return len(
+        set(
+            re.findall(
+                pattern,
+                text,
+            )
+        )
+    )
+
+
+def get_requirement_ids(text):
+    if not text:
+        return []
+
+    requirement_ids = re.findall(
+        r"\b(?:FR|NFR)-\d{3}\b",
+        text,
+    )
+
+    return sorted(
+        set(requirement_ids),
+        key=lambda item: (
+            item.startswith("NFR"),
+            item,
+        ),
+    )
+
+
+def parse_rtm_coverage(rtm_text):
+    coverage_counts = {
+        "Covered": 0,
+        "Partial": 0,
+        "Gap": 0,
+    }
+
+    if not rtm_text:
+        return coverage_counts
+
+    for line in rtm_text.splitlines():
+        stripped = line.strip()
+
+        if not stripped.startswith("|"):
+            continue
+
+        if "---" in stripped:
+            continue
+
+        cells = [
+            cell.strip()
+            for cell in stripped.strip("|").split("|")
+        ]
+
+        if len(cells) < 6:
+            continue
+
+        if cells[0] == "Requirement ID":
+            continue
+
+        status = cells[5]
+
+        if status in coverage_counts:
+            coverage_counts[status] += 1
+
+    return coverage_counts
+
+
+def calculate_traceability_score(coverage_counts):
+    total = sum(
+        coverage_counts.values()
+    )
+
+    if total == 0:
+        return 0
+
+    weighted_coverage = (
+        coverage_counts["Covered"]
+        + (
+            0.5
+            * coverage_counts["Partial"]
+        )
+    )
+
+    return round(
+        (
+            weighted_coverage
+            / total
+        )
+        * 100
+    )
 
 
 def create_word_document(document_title, content_text, company, project_name):
@@ -226,6 +329,7 @@ default_state = {
     "generated_user_stories": None,
     "generated_test_cases": None,
     "generated_rtm": None,
+    "generated_executive_analysis": None,
 }
 
 for key, value in default_state.items():
@@ -342,6 +446,7 @@ Requirements:
                 st.session_state["generated_user_stories"] = None
                 st.session_state["generated_test_cases"] = None
                 st.session_state["generated_rtm"] = None
+                st.session_state["generated_executive_analysis"] = None
 
         except Exception as error:
             st.error(f"OpenAI connection error: {error}")
@@ -445,6 +550,7 @@ Rules:
                     st.session_state["generated_user_stories"] = user_stories
                     st.session_state["generated_test_cases"] = None
                     st.session_state["generated_rtm"] = None
+                    st.session_state["generated_executive_analysis"] = None
 
             except Exception as error:
                 st.error(f"User story generation error: {error}")
@@ -551,6 +657,7 @@ Rules:
                     else:
                         st.session_state["generated_test_cases"] = test_cases
                         st.session_state["generated_rtm"] = None
+                        st.session_state["generated_executive_analysis"] = None
 
                 except Exception as error:
                     st.error(f"Test case generation error: {error}")
@@ -664,6 +771,7 @@ traceability gaps honestly.
                             st.error("OpenAI returned an empty response.")
                         else:
                             st.session_state["generated_rtm"] = rtm
+                            st.session_state["generated_executive_analysis"] = None
 
                     except Exception as error:
                         st.error(
@@ -685,3 +793,357 @@ traceability gaps honestly.
                     generated_project_name,
                     "Requirements_Traceability_Matrix",
                 )
+
+                # =============================================
+                # EXECUTIVE PROJECT DASHBOARD
+                # =============================================
+
+                st.divider()
+
+                st.header(
+                    "📊 Executive Project Dashboard"
+                )
+
+                st.caption(
+                    "A deterministic view of delivery artifacts, "
+                    "requirements coverage, and traceability health."
+                )
+
+                requirement_ids = get_requirement_ids(
+                    requirements
+                )
+
+                requirement_count = len(
+                    requirement_ids
+                )
+
+                user_story_count = count_unique_ids(
+                    user_stories,
+                    "US",
+                )
+
+                test_case_count = count_unique_ids(
+                    test_cases,
+                    "TC",
+                )
+
+                coverage_counts = parse_rtm_coverage(
+                    rtm
+                )
+
+                traceability_score = (
+                    calculate_traceability_score(
+                        coverage_counts
+                    )
+                )
+
+                metric1, metric2, metric3, metric4 = (
+                    st.columns(4)
+                )
+
+                with metric1:
+                    st.metric(
+                        "Requirements",
+                        requirement_count,
+                    )
+
+                with metric2:
+                    st.metric(
+                        "User Stories",
+                        user_story_count,
+                    )
+
+                with metric3:
+                    st.metric(
+                        "QA Test Cases",
+                        test_case_count,
+                    )
+
+                with metric4:
+                    st.metric(
+                        "Traceability Score",
+                        f"{traceability_score}%",
+                    )
+
+                coverage1, coverage2, coverage3 = (
+                    st.columns(3)
+                )
+
+                with coverage1:
+                    st.metric(
+                        "Covered",
+                        coverage_counts["Covered"],
+                    )
+
+                with coverage2:
+                    st.metric(
+                        "Partial",
+                        coverage_counts["Partial"],
+                    )
+
+                with coverage3:
+                    st.metric(
+                        "Gaps",
+                        coverage_counts["Gap"],
+                    )
+
+                st.progress(
+                    traceability_score / 100
+                )
+
+                st.caption(
+                    "Traceability Score formula: "
+                    "Covered requirements receive full credit, "
+                    "Partial requirements receive half credit, "
+                    "and Gap requirements receive no credit."
+                )
+
+                if coverage_counts["Gap"] > 0:
+                    st.warning(
+                        "Traceability gaps remain. Review the RTM "
+                        "before treating the project as implementation-ready."
+                    )
+                elif coverage_counts["Partial"] > 0:
+                    st.info(
+                        "No complete traceability gaps were detected, "
+                        "but some requirements have partial coverage."
+                    )
+                else:
+                    st.success(
+                        "All requirements represented in the RTM "
+                        "have full story and test-case coverage."
+                    )
+
+
+                # =============================================
+                # MOSCOW PRIORITIZATION + RISK ANALYSIS
+                # =============================================
+
+                st.divider()
+
+                st.header(
+                    "🎯 MoSCoW Prioritization & Risk Analysis"
+                )
+
+                st.caption(
+                    "Create an executive-ready prioritization, "
+                    "risk register, readiness assessment, "
+                    "and recommended next actions."
+                )
+
+                if st.button(
+                    "📈 Generate Executive Analysis",
+                    use_container_width=True,
+                ):
+
+                    if not api_key:
+
+                        st.error(
+                            "The OpenAI API key was not found."
+                        )
+
+                    else:
+
+                        executive_prompt = f"""
+You are a senior Business Systems Analyst,
+Product Owner, and delivery governance advisor.
+
+Create an executive project analysis using
+ONLY the source artifacts below.
+
+Company:
+{generated_company}
+
+Project:
+{generated_project_name}
+
+CURRENT TRACEABILITY METRICS:
+
+- Requirements: {requirement_count}
+- User Stories: {user_story_count}
+- QA Test Cases: {test_case_count}
+- Covered Requirements: {coverage_counts["Covered"]}
+- Partial Requirements: {coverage_counts["Partial"]}
+- Gap Requirements: {coverage_counts["Gap"]}
+- Traceability Score: {traceability_score}%
+
+BUSINESS REQUIREMENTS DOCUMENT:
+
+{requirements}
+
+JIRA USER STORIES:
+
+{user_stories}
+
+QA TEST CASES:
+
+{test_cases}
+
+REQUIREMENTS TRACEABILITY MATRIX:
+
+{rtm}
+
+Create the following sections.
+
+## Executive Summary
+
+Provide a concise executive-level summary of
+the project, business objective, delivery
+position, and most important concerns.
+
+## MoSCoW Prioritization
+
+Return a Markdown table using EXACTLY these columns:
+
+| Requirement ID | MoSCoW Category | Business Rationale |
+|---|---|---|
+
+Rules:
+
+- Include every FR-### and NFR-### from the BRD.
+- Category must be exactly one of:
+  Must Have
+  Should Have
+  Could Have
+  Won't Have This Release
+- Do not invent requirement IDs.
+- Base the category on business criticality,
+  dependencies, risk, and stated project goals.
+- "Won't Have This Release" means deferred,
+  not rejected.
+
+## Risk Register
+
+Return a Markdown table using EXACTLY these columns:
+
+| Risk ID | Risk Description | Probability | Impact | Score | Rating | Mitigation | Owner Role |
+|---|---|---|---|---|---|---|---|
+
+Rules:
+
+- Number risks RISK-001, RISK-002, etc.
+- Probability must be an integer from 1 to 5.
+- Impact must be an integer from 1 to 5.
+- Score must equal Probability multiplied by Impact.
+- Rating must use:
+  Low = 1-5
+  Medium = 6-10
+  High = 11-15
+  Critical = 16-25
+- Identify only risks supported by the source
+  artifacts or reasonable delivery risks directly
+  implied by them.
+- Owner Role must be a role, not a person's name.
+- Mitigation must be actionable.
+
+## Delivery Readiness Assessment
+
+Use this exact structure:
+
+- Readiness: [Green, Amber, or Red]
+- Traceability Score: {traceability_score}%
+- Key Strengths: [concise statement]
+- Key Constraints: [concise statement]
+- Decision Basis: [concise explanation]
+
+Guidance:
+
+- Green means the artifacts show strong coverage
+  with no material unresolved delivery blockers.
+- Amber means implementation may proceed only
+  after identified gaps, risks, or dependencies
+  are addressed.
+- Red means major unresolved gaps or critical
+  risks make implementation premature.
+
+## Recommended Next Actions
+
+Provide 3 to 7 prioritized actions.
+Start each action with:
+1.
+2.
+3.
+and continue sequentially.
+
+Important:
+
+- Do not invent company facts.
+- Do not hide traceability gaps.
+- Do not claim that AI-generated analysis is
+  formal business approval.
+- Clearly distinguish delivery recommendations
+  from confirmed project decisions.
+"""
+
+                        try:
+
+                            executive_analysis = (
+                                generate_ai_text(
+                                    executive_prompt,
+                                    (
+                                        "Generating MoSCoW priorities, "
+                                        "risk analysis, and executive "
+                                        "readiness assessment..."
+                                    ),
+                                )
+                            )
+
+                            if not executive_analysis:
+
+                                st.error(
+                                    "OpenAI returned "
+                                    "an empty response."
+                                )
+
+                            else:
+
+                                st.session_state[
+                                    "generated_executive_analysis"
+                                ] = executive_analysis
+
+                        except Exception as error:
+
+                            st.error(
+                                "Executive analysis "
+                                f"generation error: {error}"
+                            )
+
+
+                # =============================================
+                # DISPLAY EXECUTIVE ANALYSIS
+                # =============================================
+
+                if (
+                    st.session_state[
+                        "generated_executive_analysis"
+                    ]
+                ):
+
+                    executive_analysis = (
+                        st.session_state[
+                            "generated_executive_analysis"
+                        ]
+                    )
+
+                    st.success(
+                        "Executive Analysis Generated"
+                    )
+
+                    st.markdown(
+                        executive_analysis
+                    )
+
+                    st.subheader(
+                        "📥 Export Executive Analysis"
+                    )
+
+                    show_download_buttons(
+                        (
+                            "Executive Project Analysis - "
+                            "MoSCoW Prioritization and Risk Register"
+                        ),
+                        executive_analysis,
+                        generated_company,
+                        generated_project_name,
+                        "Executive_Project_Analysis",
+                    )
