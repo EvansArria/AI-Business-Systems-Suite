@@ -3,6 +3,7 @@ import re
 import csv
 import zipfile
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from io import BytesIO, StringIO
 from xml.sax.saxutils import escape
 
@@ -630,6 +631,431 @@ def compact_profile_for_ai(profile_rows, row_limit=30):
         )
 
     return "\n".join(lines)
+
+
+
+# =========================================================
+# KPI & VISUALIZATION HELPERS
+# =========================================================
+
+def get_numeric_columns(profile_rows):
+    return [
+        row["Column"]
+        for row in profile_rows
+        if row.get("Type") == "Numeric"
+    ]
+
+
+def get_dimension_columns(headers, numeric_columns):
+    numeric_set = set(numeric_columns)
+
+    return [
+        header
+        for header in headers
+        if header not in numeric_set
+    ]
+
+
+def numeric_values_for_column(records, column):
+    values = []
+
+    for record in records:
+        parsed = parse_number(
+            record.get(column, "")
+        )
+
+        if parsed is not None:
+            values.append(parsed)
+
+    return values
+
+
+def format_metric_value(column_name, value):
+    if value is None:
+        return "N/A"
+
+    lowered = column_name.lower()
+
+    if (
+        "percent" in lowered
+        or "percentage" in lowered
+        or lowered.endswith("_pct")
+    ):
+        return f"{value:.1f}%"
+
+    if (
+        "csat" in lowered
+        or "score" in lowered
+    ):
+        return f"{value:.2f}"
+
+    if abs(value - round(value)) < 0.000001:
+        return f"{int(round(value)):,}"
+
+    return f"{value:,.2f}"
+
+
+def find_column_by_keywords(headers, keyword_groups):
+    normalized = {
+        header: header.lower().replace(" ", "_")
+        for header in headers
+    }
+
+    for keywords in keyword_groups:
+        for header, normalized_header in normalized.items():
+            if all(
+                keyword in normalized_header
+                for keyword in keywords
+            ):
+                return header
+
+    return None
+
+
+def build_kpi_cards(
+    headers,
+    records,
+    numeric_columns,
+):
+    specifications = [
+        (
+            "Average SLA",
+            [
+                ("sla", "percent"),
+                ("sla",),
+            ],
+            "average",
+        ),
+        (
+            "Total Escalations",
+            [
+                ("escalation",),
+            ],
+            "sum",
+        ),
+        (
+            "Average CSAT",
+            [
+                ("csat",),
+                ("customer", "satisfaction"),
+            ],
+            "average",
+        ),
+        (
+            "Average Backlog",
+            [
+                ("backlog",),
+            ],
+            "average",
+        ),
+        (
+            "Total Tickets Opened",
+            [
+                ("ticket", "opened"),
+                ("tickets", "opened"),
+            ],
+            "sum",
+        ),
+        (
+            "Avg Resolution Hours",
+            [
+                ("resolution", "hour"),
+                ("resolution", "time"),
+            ],
+            "average",
+        ),
+    ]
+
+    cards = []
+    used_columns = set()
+
+    for label, keyword_groups, aggregation in specifications:
+        column = find_column_by_keywords(
+            numeric_columns,
+            keyword_groups,
+        )
+
+        if (
+            not column
+            or column in used_columns
+        ):
+            continue
+
+        values = numeric_values_for_column(
+            records,
+            column,
+        )
+
+        if not values:
+            continue
+
+        if aggregation == "sum":
+            value = sum(values)
+        else:
+            value = sum(values) / len(values)
+
+        cards.append(
+            {
+                "label": label,
+                "column": column,
+                "value": value,
+            }
+        )
+
+        used_columns.add(column)
+
+        if len(cards) == 4:
+            break
+
+    if len(cards) < 4:
+        for column in numeric_columns:
+            if column in used_columns:
+                continue
+
+            values = numeric_values_for_column(
+                records,
+                column,
+            )
+
+            if not values:
+                continue
+
+            cards.append(
+                {
+                    "label": f"Average {column}",
+                    "column": column,
+                    "value": sum(values) / len(values),
+                }
+            )
+
+            used_columns.add(column)
+
+            if len(cards) == 4:
+                break
+
+    return cards
+
+
+def aggregate_records(
+    records,
+    dimension,
+    metric=None,
+    aggregation="Average",
+):
+    groups = {}
+
+    for record in records:
+        raw_dimension = record.get(
+            dimension,
+            "",
+        )
+
+        dimension_value = (
+            str(raw_dimension).strip()
+            or "(Blank)"
+        )
+
+        if dimension_value not in groups:
+            groups[dimension_value] = {
+                "count": 0,
+                "values": [],
+            }
+
+        groups[dimension_value]["count"] += 1
+
+        if metric:
+            parsed = parse_number(
+                record.get(
+                    metric,
+                    "",
+                )
+            )
+
+            if parsed is not None:
+                groups[dimension_value]["values"].append(
+                    parsed
+                )
+
+    output = []
+
+    for dimension_value, group in groups.items():
+
+        if aggregation == "Count":
+            result_value = group["count"]
+
+        else:
+            values = group["values"]
+
+            if not values:
+                continue
+
+            if aggregation == "Sum":
+                result_value = sum(values)
+            elif aggregation == "Minimum":
+                result_value = min(values)
+            elif aggregation == "Maximum":
+                result_value = max(values)
+            else:
+                result_value = sum(values) / len(values)
+
+        output.append(
+            {
+                dimension: dimension_value,
+                "Value": round(
+                    result_value,
+                    3,
+                ),
+            }
+        )
+
+    output.sort(
+        key=lambda row: row["Value"],
+        reverse=True,
+    )
+
+    return output
+
+
+def parse_date_value(value):
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    formats = (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    )
+
+    try:
+        return datetime.fromisoformat(
+            text.replace(
+                "Z",
+                "+00:00",
+            )
+        )
+    except ValueError:
+        pass
+
+    for format_string in formats:
+        try:
+            return datetime.strptime(
+                text,
+                format_string,
+            )
+        except ValueError:
+            continue
+
+    return None
+
+
+def detect_date_columns(headers, records):
+    detected = []
+
+    for header in headers:
+        lowered = header.lower()
+
+        if "date" in lowered:
+            detected.append(header)
+            continue
+
+        sample_values = [
+            record.get(header, "")
+            for record in records[:50]
+            if str(
+                record.get(
+                    header,
+                    "",
+                )
+            ).strip()
+        ]
+
+        if not sample_values:
+            continue
+
+        parsed_count = sum(
+            1
+            for value in sample_values
+            if parse_date_value(value) is not None
+        )
+
+        if (
+            parsed_count
+            / len(sample_values)
+            >= 0.8
+        ):
+            detected.append(header)
+
+    return detected
+
+
+def aggregate_time_series(
+    records,
+    date_column,
+    metric,
+    aggregation="Average",
+):
+    grouped = {}
+
+    for record in records:
+        parsed_date = parse_date_value(
+            record.get(
+                date_column,
+                "",
+            )
+        )
+
+        parsed_metric = parse_number(
+            record.get(
+                metric,
+                "",
+            )
+        )
+
+        if (
+            parsed_date is None
+            or parsed_metric is None
+        ):
+            continue
+
+        date_key = parsed_date.date().isoformat()
+
+        grouped.setdefault(
+            date_key,
+            [],
+        ).append(
+            parsed_metric
+        )
+
+    output = []
+
+    for date_key in sorted(grouped):
+        values = grouped[date_key]
+
+        if aggregation == "Sum":
+            result_value = sum(values)
+        elif aggregation == "Minimum":
+            result_value = min(values)
+        elif aggregation == "Maximum":
+            result_value = max(values)
+        else:
+            result_value = sum(values) / len(values)
+
+        output.append(
+            {
+                date_column: date_key,
+                "Value": round(
+                    result_value,
+                    3,
+                ),
+            }
+        )
+
+    return output
 
 
 def create_word_document(document_title, content_text, company, project_name):
@@ -1734,6 +2160,247 @@ if uploaded_business_file is not None:
             use_container_width=True,
             hide_index=True,
         )
+
+        # =================================================
+        # INTERACTIVE KPI & VISUALIZATION DASHBOARD
+        # =================================================
+
+        st.divider()
+
+        st.subheader(
+            "📊 Interactive KPI Dashboard"
+        )
+
+        st.caption(
+            "Explore operational KPIs and build "
+            "interactive visual summaries from "
+            "the uploaded dataset."
+        )
+
+        numeric_columns = get_numeric_columns(
+            data_profile
+        )
+
+        dimension_columns = get_dimension_columns(
+            data_headers,
+            numeric_columns,
+        )
+
+        kpi_cards = build_kpi_cards(
+            data_headers,
+            data_records,
+            numeric_columns,
+        )
+
+        if kpi_cards:
+
+            kpi_columns = st.columns(
+                len(kpi_cards)
+            )
+
+            for index, card in enumerate(
+                kpi_cards
+            ):
+                with kpi_columns[index]:
+                    st.metric(
+                        card["label"],
+                        format_metric_value(
+                            card["column"],
+                            card["value"],
+                        ),
+                    )
+
+        else:
+
+            st.info(
+                "No numeric KPI fields were "
+                "detected in this dataset."
+            )
+
+        if (
+            dimension_columns
+            and numeric_columns
+        ):
+
+            st.markdown(
+                "#### Category Performance"
+            )
+
+            chart_col1, chart_col2, chart_col3 = (
+                st.columns(3)
+            )
+
+            with chart_col1:
+
+                selected_dimension = st.selectbox(
+                    "Group by",
+                    options=dimension_columns,
+                    key="dashboard_dimension",
+                )
+
+            with chart_col2:
+
+                selected_metric = st.selectbox(
+                    "Metric",
+                    options=numeric_columns,
+                    key="dashboard_metric",
+                )
+
+            with chart_col3:
+
+                selected_aggregation = st.selectbox(
+                    "Aggregation",
+                    options=[
+                        "Average",
+                        "Sum",
+                        "Minimum",
+                        "Maximum",
+                        "Count",
+                    ],
+                    key="dashboard_aggregation",
+                )
+
+            category_chart_data = aggregate_records(
+                data_records,
+                selected_dimension,
+                selected_metric,
+                selected_aggregation,
+            )
+
+            if category_chart_data:
+
+                st.bar_chart(
+                    category_chart_data,
+                    x=selected_dimension,
+                    y="Value",
+                    x_label=selected_dimension,
+                    y_label=(
+                        f"{selected_aggregation} "
+                        f"{selected_metric}"
+                    ),
+                    width="stretch",
+                )
+
+                st.dataframe(
+                    category_chart_data,
+                    width="stretch",
+                    hide_index=True,
+                )
+
+            else:
+
+                st.info(
+                    "The selected fields do not "
+                    "contain enough numeric data "
+                    "for this chart."
+                )
+
+
+        date_columns = detect_date_columns(
+            data_headers,
+            data_records,
+        )
+
+        if (
+            date_columns
+            and numeric_columns
+        ):
+
+            st.markdown(
+                "#### Trend Over Time"
+            )
+
+            trend_col1, trend_col2, trend_col3 = (
+                st.columns(3)
+            )
+
+            with trend_col1:
+
+                selected_date_column = st.selectbox(
+                    "Date field",
+                    options=date_columns,
+                    key="dashboard_date",
+                )
+
+            with trend_col2:
+
+                selected_trend_metric = st.selectbox(
+                    "Trend metric",
+                    options=numeric_columns,
+                    key="dashboard_trend_metric",
+                )
+
+            with trend_col3:
+
+                selected_trend_aggregation = st.selectbox(
+                    "Trend aggregation",
+                    options=[
+                        "Average",
+                        "Sum",
+                        "Minimum",
+                        "Maximum",
+                    ],
+                    key="dashboard_trend_aggregation",
+                )
+
+            trend_chart_data = aggregate_time_series(
+                data_records,
+                selected_date_column,
+                selected_trend_metric,
+                selected_trend_aggregation,
+            )
+
+            if trend_chart_data:
+
+                st.line_chart(
+                    trend_chart_data,
+                    x=selected_date_column,
+                    y="Value",
+                    x_label=selected_date_column,
+                    y_label=(
+                        f"{selected_trend_aggregation} "
+                        f"{selected_trend_metric}"
+                    ),
+                    width="stretch",
+                )
+
+            else:
+
+                st.info(
+                    "No usable time-series data "
+                    "was found for the selected "
+                    "date and metric."
+                )
+
+
+        if dimension_columns:
+
+            st.markdown(
+                "#### Category Distribution"
+            )
+
+            distribution_dimension = st.selectbox(
+                "Category field",
+                options=dimension_columns,
+                key="dashboard_distribution_dimension",
+            )
+
+            distribution_data = aggregate_records(
+                data_records,
+                distribution_dimension,
+                aggregation="Count",
+            )
+
+            if distribution_data:
+
+                st.bar_chart(
+                    distribution_data,
+                    x=distribution_dimension,
+                    y="Value",
+                    x_label=distribution_dimension,
+                    y_label="Record Count",
+                    width="stretch",
+                )
 
         default_data_company = st.session_state.get(
             "generated_company",
