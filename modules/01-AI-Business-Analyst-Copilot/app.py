@@ -1,6 +1,9 @@
 import os
 import re
-from io import BytesIO
+import csv
+import zipfile
+import xml.etree.ElementTree as ET
+from io import BytesIO, StringIO
 from xml.sax.saxutils import escape
 
 import streamlit as st
@@ -151,6 +154,482 @@ def calculate_traceability_score(coverage_counts):
         )
         * 100
     )
+
+
+# =========================================================
+# BUSINESS DATA ANALYSIS HELPERS
+# =========================================================
+
+def column_index_from_reference(cell_reference):
+    letters = "".join(
+        character
+        for character in cell_reference
+        if character.isalpha()
+    )
+
+    column_index = 0
+
+    for character in letters.upper():
+        column_index = (
+            column_index * 26
+            + ord(character)
+            - ord("A")
+            + 1
+        )
+
+    return max(
+        column_index - 1,
+        0,
+    )
+
+
+def make_unique_headers(raw_headers):
+    headers = []
+    seen = {}
+
+    for index, raw_header in enumerate(
+        raw_headers,
+        start=1,
+    ):
+        header = str(
+            raw_header
+            if raw_header is not None
+            else ""
+        ).strip()
+
+        if not header:
+            header = f"Column_{index}"
+
+        if header in seen:
+            seen[header] += 1
+            header = f"{header}_{seen[header]}"
+        else:
+            seen[header] = 1
+
+        headers.append(header)
+
+    return headers
+
+
+def rows_to_records(rows):
+    if not rows:
+        return [], []
+
+    headers = make_unique_headers(rows[0])
+    records = []
+
+    for raw_row in rows[1:]:
+        row = list(raw_row)
+
+        if len(row) < len(headers):
+            row.extend([""] * (len(headers) - len(row)))
+
+        row = row[:len(headers)]
+
+        if not any(
+            str(value).strip()
+            for value in row
+            if value is not None
+        ):
+            continue
+
+        record = {
+            headers[index]: "" if value is None else value
+            for index, value in enumerate(row)
+        }
+
+        records.append(record)
+
+    return headers, records
+
+
+def read_csv_rows(file_bytes):
+    decoded_text = None
+
+    for encoding in (
+        "utf-8-sig",
+        "utf-8",
+        "cp1252",
+    ):
+        try:
+            decoded_text = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if decoded_text is None:
+        raise ValueError(
+            "The CSV file encoding could not be read. "
+            "Save it as UTF-8 CSV and try again."
+        )
+
+    reader = csv.reader(StringIO(decoded_text))
+    return [row for row in reader]
+
+
+def read_xlsx_rows(file_bytes):
+    workbook_namespace = (
+        "http://schemas.openxmlformats.org/"
+        "spreadsheetml/2006/main"
+    )
+
+    relationships_namespace = (
+        "http://schemas.openxmlformats.org/"
+        "package/2006/relationships"
+    )
+
+    office_relationship_namespace = (
+        "http://schemas.openxmlformats.org/"
+        "officeDocument/2006/relationships"
+    )
+
+    with zipfile.ZipFile(BytesIO(file_bytes)) as workbook_zip:
+        file_names = set(workbook_zip.namelist())
+
+        required_files = {
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+        }
+
+        if not required_files.issubset(file_names):
+            raise ValueError(
+                "This does not appear to be a valid .xlsx workbook."
+            )
+
+        shared_strings = []
+
+        if "xl/sharedStrings.xml" in file_names:
+            shared_root = ET.fromstring(
+                workbook_zip.read("xl/sharedStrings.xml")
+            )
+
+            for shared_item in shared_root.findall(
+                f"{{{workbook_namespace}}}si"
+            ):
+                text_parts = [
+                    text_node.text or ""
+                    for text_node in shared_item.iter(
+                        f"{{{workbook_namespace}}}t"
+                    )
+                ]
+                shared_strings.append("".join(text_parts))
+
+        workbook_root = ET.fromstring(
+            workbook_zip.read("xl/workbook.xml")
+        )
+
+        first_sheet = workbook_root.find(
+            f".//{{{workbook_namespace}}}sheet"
+        )
+
+        if first_sheet is None:
+            raise ValueError(
+                "The workbook does not contain a worksheet."
+            )
+
+        relationship_id = first_sheet.get(
+            f"{{{office_relationship_namespace}}}id"
+        )
+
+        relationships_root = ET.fromstring(
+            workbook_zip.read("xl/_rels/workbook.xml.rels")
+        )
+
+        worksheet_target = None
+
+        for relationship in relationships_root.findall(
+            f"{{{relationships_namespace}}}Relationship"
+        ):
+            if relationship.get("Id") == relationship_id:
+                worksheet_target = relationship.get("Target")
+                break
+
+        if not worksheet_target:
+            raise ValueError(
+                "The first worksheet could not be located."
+            )
+
+        if worksheet_target.startswith("/"):
+            worksheet_path = worksheet_target.lstrip("/")
+        elif worksheet_target.startswith("xl/"):
+            worksheet_path = worksheet_target
+        else:
+            worksheet_path = "xl/" + worksheet_target.lstrip("./")
+
+        if worksheet_path not in file_names:
+            raise ValueError(
+                "The first worksheet data could not be read."
+            )
+
+        sheet_root = ET.fromstring(
+            workbook_zip.read(worksheet_path)
+        )
+
+        parsed_rows = []
+
+        for row_node in sheet_root.findall(
+            f".//{{{workbook_namespace}}}row"
+        ):
+            cell_values = {}
+            max_column_index = -1
+
+            for cell_node in row_node.findall(
+                f"{{{workbook_namespace}}}c"
+            ):
+                cell_reference = cell_node.get("r", "A1")
+                column_index = column_index_from_reference(
+                    cell_reference
+                )
+                max_column_index = max(
+                    max_column_index,
+                    column_index,
+                )
+
+                cell_type = cell_node.get("t")
+                value = ""
+
+                if cell_type == "inlineStr":
+                    text_parts = [
+                        text_node.text or ""
+                        for text_node in cell_node.iter(
+                            f"{{{workbook_namespace}}}t"
+                        )
+                    ]
+                    value = "".join(text_parts)
+                else:
+                    value_node = cell_node.find(
+                        f"{{{workbook_namespace}}}v"
+                    )
+                    raw_value = (
+                        value_node.text
+                        if value_node is not None
+                        and value_node.text is not None
+                        else ""
+                    )
+
+                    if cell_type == "s" and raw_value != "":
+                        try:
+                            value = shared_strings[int(raw_value)]
+                        except (ValueError, IndexError):
+                            value = raw_value
+                    elif cell_type == "b":
+                        value = "TRUE" if raw_value == "1" else "FALSE"
+                    else:
+                        value = raw_value
+
+                cell_values[column_index] = value
+
+            if max_column_index < 0:
+                parsed_rows.append([])
+                continue
+
+            parsed_rows.append(
+                [
+                    cell_values.get(index, "")
+                    for index in range(max_column_index + 1)
+                ]
+            )
+
+        return parsed_rows
+
+
+def read_uploaded_table(
+    uploaded_file,
+    max_rows=5000,
+    max_columns=50,
+):
+    file_name = uploaded_file.name.lower()
+    file_bytes = uploaded_file.getvalue()
+
+    if file_name.endswith(".csv"):
+        raw_rows = read_csv_rows(file_bytes)
+    elif file_name.endswith(".xlsx"):
+        raw_rows = read_xlsx_rows(file_bytes)
+    else:
+        raise ValueError(
+            "Please upload a .csv or .xlsx file."
+        )
+
+    raw_rows = raw_rows[:max_rows + 1]
+    raw_rows = [row[:max_columns] for row in raw_rows]
+
+    headers, records = rows_to_records(raw_rows)
+
+    if not headers:
+        raise ValueError(
+            "The uploaded file does not contain readable tabular data."
+        )
+
+    return headers, records
+
+
+def parse_number(value):
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    is_percent = text.endswith("%")
+
+    cleaned = (
+        text
+        .replace(",", "")
+        .replace("$", "")
+        .replace("£", "")
+        .replace("€", "")
+        .replace("%", "")
+        .strip()
+    )
+
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = "-" + cleaned[1:-1]
+
+    try:
+        number = float(cleaned)
+
+        if is_percent:
+            number = number / 100
+
+        return number
+    except ValueError:
+        return None
+
+
+def create_data_profile(headers, records):
+    profile_rows = []
+    total_cells = len(records) * len(headers)
+    missing_cells = 0
+    numeric_columns = 0
+
+    for header in headers:
+        raw_values = [record.get(header, "") for record in records]
+
+        nonblank_values = [
+            value
+            for value in raw_values
+            if str(value).strip()
+        ]
+
+        missing_count = len(raw_values) - len(nonblank_values)
+        missing_cells += missing_count
+
+        numeric_values = [
+            parsed
+            for value in nonblank_values
+            if (parsed := parse_number(value)) is not None
+        ]
+
+        numeric_ratio = (
+            len(numeric_values) / len(nonblank_values)
+            if nonblank_values
+            else 0
+        )
+
+        is_numeric = bool(nonblank_values) and numeric_ratio >= 0.8
+        column_type = "Numeric" if is_numeric else "Text / Categorical"
+
+        if is_numeric:
+            numeric_columns += 1
+
+        unique_count = len(
+            set(str(value) for value in nonblank_values)
+        )
+
+        profile_record = {
+            "Column": header,
+            "Type": column_type,
+            "Non-Blank": len(nonblank_values),
+            "Missing": missing_count,
+            "Unique": unique_count,
+        }
+
+        if is_numeric and numeric_values:
+            profile_record["Min"] = round(min(numeric_values), 2)
+            profile_record["Average"] = round(
+                sum(numeric_values) / len(numeric_values),
+                2,
+            )
+            profile_record["Max"] = round(max(numeric_values), 2)
+        else:
+            profile_record["Min"] = ""
+            profile_record["Average"] = ""
+            profile_record["Max"] = ""
+
+        profile_rows.append(profile_record)
+
+    completeness = (
+        (1 - (missing_cells / total_cells)) * 100
+        if total_cells
+        else 0
+    )
+
+    summary = {
+        "rows": len(records),
+        "columns": len(headers),
+        "numeric_columns": numeric_columns,
+        "missing_cells": missing_cells,
+        "completeness": round(completeness, 1),
+    }
+
+    return summary, profile_rows
+
+
+def compact_records_for_ai(
+    headers,
+    records,
+    row_limit=40,
+    column_limit=20,
+):
+    selected_headers = headers[:column_limit]
+    lines = [
+        " | ".join(selected_headers),
+        " | ".join(["---" for _ in selected_headers]),
+    ]
+
+    for record in records[:row_limit]:
+        values = []
+
+        for header in selected_headers:
+            value = str(record.get(header, ""))
+            value = (
+                value
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .replace("|", "/")
+            )
+
+            if len(value) > 120:
+                value = value[:117] + "..."
+
+            values.append(value)
+
+        lines.append(" | ".join(values))
+
+    return "\n".join(lines)
+
+
+def compact_profile_for_ai(profile_rows, row_limit=30):
+    lines = []
+
+    for profile in profile_rows[:row_limit]:
+        lines.append(
+            f"- {profile['Column']}: "
+            f"type={profile['Type']}; "
+            f"nonblank={profile['Non-Blank']}; "
+            f"missing={profile['Missing']}; "
+            f"unique={profile['Unique']}; "
+            f"min={profile['Min']}; "
+            f"average={profile['Average']}; "
+            f"max={profile['Max']}"
+        )
+
+    return "\n".join(lines)
 
 
 def create_word_document(document_title, content_text, company, project_name):
@@ -330,6 +809,8 @@ default_state = {
     "generated_test_cases": None,
     "generated_rtm": None,
     "generated_executive_analysis": None,
+    "generated_data_analysis": None,
+    "generated_data_filename": "",
 }
 
 for key, value in default_state.items():
@@ -1147,3 +1628,337 @@ Important:
                         generated_project_name,
                         "Executive_Project_Analysis",
                     )
+
+
+# =========================================================
+# AI BUSINESS DATA ANALYSIS
+# =========================================================
+
+st.divider()
+
+st.header(
+    "📈 AI Business Data Analysis"
+)
+
+st.caption(
+    "Upload a CSV or Excel .xlsx file to profile "
+    "business data and generate an AI-assisted "
+    "operational analysis."
+)
+
+uploaded_business_file = st.file_uploader(
+    "Upload business data",
+    type=[
+        "csv",
+        "xlsx",
+    ],
+    max_upload_size=10,
+    help=(
+        "Supported formats: CSV and Excel .xlsx. "
+        "The analysis reads up to 5,000 rows and "
+        "50 columns per upload."
+    ),
+    key="business_data_uploader",
+)
+
+if uploaded_business_file is not None:
+
+    try:
+
+        data_headers, data_records = read_uploaded_table(
+            uploaded_business_file
+        )
+
+        data_summary, data_profile = create_data_profile(
+            data_headers,
+            data_records,
+        )
+
+        st.success(
+            f"Loaded {uploaded_business_file.name}: "
+            f"{data_summary['rows']} rows and "
+            f"{data_summary['columns']} columns."
+        )
+
+        data_metric1, data_metric2, data_metric3, data_metric4 = (
+            st.columns(4)
+        )
+
+        with data_metric1:
+            st.metric(
+                "Rows",
+                data_summary["rows"],
+            )
+
+        with data_metric2:
+            st.metric(
+                "Columns",
+                data_summary["columns"],
+            )
+
+        with data_metric3:
+            st.metric(
+                "Numeric Columns",
+                data_summary["numeric_columns"],
+            )
+
+        with data_metric4:
+            st.metric(
+                "Data Completeness",
+                f"{data_summary['completeness']}%",
+            )
+
+        st.subheader(
+            "🔎 Data Preview"
+        )
+
+        preview_records = data_records[:25]
+
+        if preview_records:
+            st.dataframe(
+                preview_records,
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "The file contains headers but no data rows."
+            )
+
+        st.subheader(
+            "🧾 Data Profile"
+        )
+
+        st.dataframe(
+            data_profile,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        default_data_company = st.session_state.get(
+            "generated_company",
+            "",
+        )
+
+        default_data_project = st.session_state.get(
+            "generated_project_name",
+            "",
+        )
+
+        analysis_company = st.text_input(
+            "Company for Data Analysis",
+            value=default_data_company,
+            key="analysis_company",
+        )
+
+        analysis_project = st.text_input(
+            "Project / Analysis Name",
+            value=(
+                default_data_project
+                or "Business Data Analysis"
+            ),
+            key="analysis_project",
+        )
+
+        analysis_goal = st.text_area(
+            "Analysis Goal (optional)",
+            placeholder=(
+                "Example: Identify operational bottlenecks, "
+                "service trends, high-risk areas, and "
+                "opportunities for process improvement."
+            ),
+            height=100,
+            key="analysis_goal",
+        )
+
+        if st.button(
+            "🧠 Analyze Business Data",
+            use_container_width=True,
+        ):
+
+            if not data_records:
+                st.warning(
+                    "The uploaded file has no data rows to analyze."
+                )
+
+            elif not api_key:
+                st.error(
+                    "The OpenAI API key was not found."
+                )
+
+            else:
+                profile_context = compact_profile_for_ai(
+                    data_profile
+                )
+
+                sample_context = compact_records_for_ai(
+                    data_headers,
+                    data_records,
+                )
+
+                data_analysis_prompt = f"""
+You are a senior Business Systems Analyst
+with experience in operational analytics,
+process improvement, KPI analysis, and
+executive communication.
+
+Analyze the uploaded business dataset using
+ONLY the data profile and representative rows
+provided below.
+
+Company:
+{analysis_company or "Not provided"}
+
+Project / Analysis:
+{analysis_project or "Business Data Analysis"}
+
+User's Analysis Goal:
+{analysis_goal or "Provide a general operational and business analysis."}
+
+DATASET METRICS:
+
+- Total Rows Read: {data_summary["rows"]}
+- Total Columns: {data_summary["columns"]}
+- Numeric Columns: {data_summary["numeric_columns"]}
+- Missing Cells: {data_summary["missing_cells"]}
+- Data Completeness: {data_summary["completeness"]}%
+
+COLUMN PROFILE:
+
+{profile_context}
+
+REPRESENTATIVE DATA SAMPLE:
+
+{sample_context}
+
+Important limitations:
+
+- The representative sample may not contain
+  every row in the uploaded dataset.
+- Do not claim a pattern exists across the
+  entire dataset unless it is supported by
+  the supplied profile or sample.
+- Clearly label observations that require
+  full-dataset validation.
+- Do not invent company-specific facts.
+- Do not infer protected or sensitive personal
+  characteristics from the data.
+
+Create the following sections:
+
+## Executive Summary
+
+Summarize the most decision-relevant findings.
+
+## Data Quality Assessment
+
+Discuss completeness, missing values,
+field consistency, and analysis limitations.
+
+## KPI and Operational Findings
+
+Identify measurable observations supported
+by the supplied data.
+
+## Trends and Patterns
+
+Identify notable trends, concentrations,
+relationships, or unusual observations.
+Distinguish confirmed findings from items
+that require further validation.
+
+## Business Risks
+
+Identify operational, process, service,
+financial, compliance, or data-quality risks
+only when supported by the data.
+
+## Process Improvement Opportunities
+
+Recommend practical improvements connected
+to the observed data.
+
+## Recommended Actions
+
+Provide 3 to 7 prioritized actions.
+Number them sequentially.
+
+## Suggested KPIs
+
+Recommend useful KPIs that could be tracked
+from this dataset or from closely related
+business data.
+
+## Follow-Up Analysis Questions
+
+List the most valuable questions or additional
+data needed for deeper analysis.
+
+Use concise enterprise business-analysis
+language suitable for stakeholders.
+"""
+
+                try:
+                    data_analysis = generate_ai_text(
+                        data_analysis_prompt,
+                        "Analyzing business data and preparing recommendations...",
+                    )
+
+                    if not data_analysis:
+                        st.error(
+                            "OpenAI returned an empty response."
+                        )
+                    else:
+                        st.session_state[
+                            "generated_data_analysis"
+                        ] = data_analysis
+
+                        st.session_state[
+                            "generated_data_filename"
+                        ] = uploaded_business_file.name
+
+                except Exception as error:
+                    st.error(
+                        "Business data analysis "
+                        f"error: {error}"
+                    )
+
+        if st.session_state["generated_data_analysis"]:
+            data_analysis = st.session_state[
+                "generated_data_analysis"
+            ]
+
+            st.divider()
+
+            st.success(
+                "Business Data Analysis Generated"
+            )
+
+            st.markdown(data_analysis)
+
+            st.subheader(
+                "📥 Export Business Data Analysis"
+            )
+
+            show_download_buttons(
+                "AI Business Data Analysis",
+                data_analysis,
+                analysis_company or "Not provided",
+                analysis_project or "Business Data Analysis",
+                "Business_Data_Analysis",
+            )
+
+    except (
+        ValueError,
+        zipfile.BadZipFile,
+        ET.ParseError,
+    ) as error:
+        st.error(
+            f"File reading error: {error}"
+        )
+
+    except Exception as error:
+        st.error(
+            "Unexpected file processing "
+            f"error: {error}"
+        )
