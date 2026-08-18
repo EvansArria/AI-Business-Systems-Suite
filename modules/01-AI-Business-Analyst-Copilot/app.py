@@ -1505,6 +1505,12 @@ default_state = {
     "generated_data_analysis": None,
     "generated_data_filename": "",
     "generated_project_package": None,
+    "input_company": "",
+    "input_project_name": "",
+    "input_problem": "",
+    "input_goal": "",
+    "input_stakeholders": "",
+    "input_constraints": "",
 }
 
 for key, value in default_state.items():
@@ -1512,20 +1518,321 @@ for key, value in default_state.items():
         st.session_state[key] = value
 
 
+# =========================================================
+# PRODUCT POLISH: SIDEBAR + DEMO MODE + WORKFLOW STATUS
+# =========================================================
+
+demo_scenario = {
+    "input_company": "Northstar Technology Services",
+    "input_project_name": "Enterprise Service Operations Improvement",
+    "input_problem": (
+        "The organization is experiencing inconsistent service levels, "
+        "rising ticket backlogs, repeat escalations, and limited visibility "
+        "into operational performance across support teams."
+    ),
+    "input_goal": (
+        "Create a standardized, measurable service-management workflow "
+        "that improves SLA attainment, reduces escalations and backlog, "
+        "strengthens stakeholder visibility, and supports data-driven "
+        "continuous improvement."
+    ),
+    "input_stakeholders": (
+        "Chief Information Officer\n"
+        "Director of IT Operations\n"
+        "Service Desk Manager\n"
+        "Application Support Manager\n"
+        "Network Operations Manager\n"
+        "Business Unit Leaders\n"
+        "QA Analyst\n"
+        "End Users"
+    ),
+    "input_constraints": (
+        "Implementation must use existing enterprise platforms where "
+        "possible.\n"
+        "Operational disruption must be minimized during rollout.\n"
+        "Security and access-control requirements must be maintained.\n"
+        "The solution must support measurable SLA and KPI reporting."
+    ),
+}
+
+
+def clear_workflow():
+    generated_keys = [
+        "generated_requirements",
+        "generated_company",
+        "generated_project_name",
+        "generated_user_stories",
+        "generated_test_cases",
+        "generated_rtm",
+        "generated_executive_analysis",
+        "generated_data_analysis",
+        "generated_data_filename",
+        "generated_project_package",
+    ]
+
+    input_keys = [
+        "input_company",
+        "input_project_name",
+        "input_problem",
+        "input_goal",
+        "input_stakeholders",
+        "input_constraints",
+    ]
+
+    for key in generated_keys:
+        if key in (
+            "generated_company",
+            "generated_project_name",
+            "generated_data_filename",
+        ):
+            st.session_state[key] = ""
+        else:
+            st.session_state[key] = None
+
+    for key in input_keys:
+        st.session_state[key] = ""
+
+    if "business_data_uploader" in st.session_state:
+        del st.session_state["business_data_uploader"]
+
+
+with st.sidebar:
+
+    st.title("🤖 BA Copilot")
+
+    st.caption(
+        "AI-enabled requirements, QA, traceability, "
+        "governance, and analytics."
+    )
+
+    st.divider()
+
+    st.subheader("⚡ Portfolio Demo")
+
+    if st.button(
+        "🎬 Load Demo Scenario",
+        use_container_width=True,
+    ):
+        for key, value in demo_scenario.items():
+            st.session_state[key] = value
+
+        st.rerun()
+
+    if st.button(
+        "🧹 Reset Workflow",
+        use_container_width=True,
+    ):
+        clear_workflow()
+        st.rerun()
+
+    st.divider()
+
+    st.subheader("📍 Workflow Status")
+
+    workflow_status = [
+        (
+            "BRD",
+            bool(
+                st.session_state.get(
+                    "generated_requirements"
+                )
+            ),
+        ),
+        (
+            "Jira Stories",
+            bool(
+                st.session_state.get(
+                    "generated_user_stories"
+                )
+            ),
+        ),
+        (
+            "QA Tests",
+            bool(
+                st.session_state.get(
+                    "generated_test_cases"
+                )
+            ),
+        ),
+        (
+            "RTM",
+            bool(
+                st.session_state.get(
+                    "generated_rtm"
+                )
+            ),
+        ),
+        (
+            "Executive Analysis",
+            bool(
+                st.session_state.get(
+                    "generated_executive_analysis"
+                )
+            ),
+        ),
+        (
+            "Data Analysis",
+            bool(
+                st.session_state.get(
+                    "generated_data_analysis"
+                )
+            ),
+        ),
+        (
+            "Project Package",
+            bool(
+                st.session_state.get(
+                    "generated_project_package"
+                )
+            ),
+        ),
+    ]
+
+    completed_steps = sum(
+        1
+        for _, ready in workflow_status
+        if ready
+    )
+
+    workflow_percent = round(
+        completed_steps
+        / len(workflow_status)
+        * 100
+    )
+
+    st.progress(
+        workflow_percent / 100
+    )
+
+    st.caption(
+        f"{completed_steps} of "
+        f"{len(workflow_status)} "
+        "workflow milestones complete"
+    )
+
+    for label, ready in workflow_status:
+        st.write(
+            f"{'✅' if ready else '⬜'} {label}"
+        )
+
+    st.divider()
+
+    st.subheader("🧭 Navigation")
+
+    st.markdown(
+        """
+- [Business Requirements](#business-requirements-generator)
+- [Business Data Analysis](#ai-business-data-analysis)
+- [Complete Project Package](#complete-project-package-export)
+"""
+    )
+
+    st.divider()
+
+    st.caption(
+        "Tip: Use **Load Demo Scenario** to populate "
+        "a portfolio-ready project example."
+    )
+
+
+# =========================================================
+# POLISHED APP HEADER
+# =========================================================
+
 st.title("🤖 AI Business Analyst Copilot")
-st.caption(
-    "Generate professional Business Analysis documentation using AI."
+
+st.markdown(
+    """
+**From business problem to implementation-ready artifacts.**
+
+Generate requirements, Jira-ready stories, QA test cases,
+traceability, executive governance analysis, operational
+data insights, and complete stakeholder deliverables.
+"""
 )
+
+hero_col1, hero_col2, hero_col3 = st.columns(3)
+
+with hero_col1:
+    st.metric(
+        "Delivery Workflow",
+        "End-to-End",
+    )
+
+with hero_col2:
+    st.metric(
+        "Export Formats",
+        "Word · PDF · Markdown",
+    )
+
+with hero_col3:
+    st.metric(
+        "Data Inputs",
+        "CSV · Excel",
+    )
+
+with st.expander(
+    "ℹ️ Portfolio Capabilities"
+):
+    st.markdown(
+        """
+- Requirements elicitation and BRD generation
+- Functional and non-functional requirements
+- Jira-ready user stories and acceptance criteria
+- QA test-case generation
+- Requirements traceability
+- MoSCoW prioritization and risk analysis
+- Executive delivery-readiness assessment
+- CSV / Excel operational analytics
+- KPI and trend visualization
+- Complete project-package export
+"""
+    )
+
 st.divider()
 
-st.subheader("📋 Business Requirements Generator")
+st.subheader(
+    "📋 Business Requirements Generator"
+)
 
-company = st.text_input("Company")
-project_name = st.text_input("Project Name")
-problem = st.text_area("Business Problem", height=120)
-goal = st.text_area("Business Goal", height=120)
-stakeholders = st.text_area("Stakeholders (one per line)", height=100)
-constraints = st.text_area("Business Constraints", height=100)
+st.caption(
+    "Enter a business scenario manually or use the "
+    "**Load Demo Scenario** button in the sidebar."
+)
+
+company = st.text_input(
+    "Company",
+    key="input_company",
+)
+
+project_name = st.text_input(
+    "Project Name",
+    key="input_project_name",
+)
+
+problem = st.text_area(
+    "Business Problem",
+    height=120,
+    key="input_problem",
+)
+
+goal = st.text_area(
+    "Business Goal",
+    height=120,
+    key="input_goal",
+)
+
+stakeholders = st.text_area(
+    "Stakeholders (one per line)",
+    height=130,
+    key="input_stakeholders",
+)
+
+constraints = st.text_area(
+    "Business Constraints",
+    height=120,
+    key="input_constraints",
+)
 
 
 if st.button(
