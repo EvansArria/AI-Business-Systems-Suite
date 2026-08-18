@@ -1058,6 +1058,273 @@ def aggregate_time_series(
     return output
 
 
+
+# =========================================================
+# COMPLETE PROJECT PACKAGE HELPERS
+# =========================================================
+
+def build_project_package_text(
+    company,
+    project_name,
+    requirements,
+    user_stories,
+    test_cases,
+    rtm,
+    executive_analysis,
+    data_analysis,
+    data_filename,
+):
+    coverage_counts = parse_rtm_coverage(
+        rtm or ""
+    )
+
+    traceability_score = (
+        calculate_traceability_score(
+            coverage_counts
+        )
+        if rtm
+        else 0
+    )
+
+    sections = [
+        "# AI Business Analyst Copilot — Complete Project Package",
+        "",
+        f"**Company:** {company or 'Not provided'}",
+        f"**Project:** {project_name or 'Business Analysis Project'}",
+        "",
+        "## Package Overview",
+        "",
+        (
+            "This package consolidates the business-analysis artifacts "
+            "generated during the project workflow."
+        ),
+        "",
+        "### Artifact Status",
+        "",
+        (
+            f"- Business Requirements Document: "
+            f"{'Included' if requirements else 'Not generated'}"
+        ),
+        (
+            f"- Jira User Stories: "
+            f"{'Included' if user_stories else 'Not generated'}"
+        ),
+        (
+            f"- QA Test Cases: "
+            f"{'Included' if test_cases else 'Not generated'}"
+        ),
+        (
+            f"- Requirements Traceability Matrix: "
+            f"{'Included' if rtm else 'Not generated'}"
+        ),
+        (
+            f"- Executive Analysis: "
+            f"{'Included' if executive_analysis else 'Not generated'}"
+        ),
+        (
+            f"- Business Data Analysis: "
+            f"{'Included' if data_analysis else 'Not generated'}"
+        ),
+        "",
+    ]
+
+    if rtm:
+        sections.extend(
+            [
+                "### Traceability Snapshot",
+                "",
+                (
+                    f"- Covered Requirements: "
+                    f"{coverage_counts['Covered']}"
+                ),
+                (
+                    f"- Partial Coverage: "
+                    f"{coverage_counts['Partial']}"
+                ),
+                (
+                    f"- Coverage Gaps: "
+                    f"{coverage_counts['Gap']}"
+                ),
+                (
+                    f"- Traceability Score: "
+                    f"{traceability_score}%"
+                ),
+                "",
+            ]
+        )
+
+    sections.extend(
+        [
+            "## Table of Contents",
+            "",
+            "1. Business Requirements Document",
+            "2. Jira-Ready User Stories",
+            "3. QA Test Cases",
+            "4. Requirements Traceability Matrix",
+            "5. Executive Project Analysis",
+            "6. Business Data Analysis",
+            "",
+        ]
+    )
+
+    artifact_sections = [
+        (
+            "## 1. Business Requirements Document",
+            requirements,
+            "The BRD has not been generated.",
+        ),
+        (
+            "## 2. Jira-Ready User Stories",
+            user_stories,
+            "Jira user stories have not been generated.",
+        ),
+        (
+            "## 3. QA Test Cases",
+            test_cases,
+            "QA test cases have not been generated.",
+        ),
+        (
+            "## 4. Requirements Traceability Matrix",
+            rtm,
+            "The traceability matrix has not been generated.",
+        ),
+        (
+            "## 5. Executive Project Analysis",
+            executive_analysis,
+            "The executive analysis has not been generated.",
+        ),
+    ]
+
+    for heading, content, missing_message in artifact_sections:
+        sections.extend(
+            [
+                heading,
+                "",
+                content or missing_message,
+                "",
+            ]
+        )
+
+    sections.extend(
+        [
+            "## 6. Business Data Analysis",
+            "",
+        ]
+    )
+
+    if data_analysis:
+        if data_filename:
+            sections.extend(
+                [
+                    f"**Source File:** {data_filename}",
+                    "",
+                ]
+            )
+
+        sections.extend(
+            [
+                data_analysis,
+                "",
+            ]
+        )
+    else:
+        sections.extend(
+            [
+                (
+                    "Business data analysis was not included in this "
+                    "package."
+                ),
+                "",
+            ]
+        )
+
+    sections.extend(
+        [
+            "## Package Notes",
+            "",
+            (
+                "- AI-generated artifacts should be reviewed and approved "
+                "by appropriate business, product, technical, and QA "
+                "stakeholders before implementation."
+            ),
+            (
+                "- Traceability, priorities, risks, and recommendations "
+                "reflect the information provided to the application."
+            ),
+            (
+                "- This package does not constitute formal project approval "
+                "or production authorization."
+            ),
+        ]
+    )
+
+    return "\n".join(
+        sections
+    )
+
+
+def create_project_package_zip(
+    package_text,
+    company,
+    project_name,
+    artifacts,
+):
+    buffer = BytesIO()
+
+    base_name = safe_filename(
+        project_name,
+        fallback="Business_Analysis_Project",
+    )
+
+    package_word = create_word_document(
+        "Complete Business Analysis Project Package",
+        package_text,
+        company,
+        project_name,
+    )
+
+    package_pdf = create_pdf_document(
+        "Complete Business Analysis Project Package",
+        package_text,
+        company,
+        project_name,
+    )
+
+    with zipfile.ZipFile(
+        buffer,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as package_zip:
+
+        package_zip.writestr(
+            f"{base_name}_Complete_Project_Package.md",
+            package_text,
+        )
+
+        package_zip.writestr(
+            f"{base_name}_Complete_Project_Package.docx",
+            package_word.getvalue(),
+        )
+
+        package_zip.writestr(
+            f"{base_name}_Complete_Project_Package.pdf",
+            package_pdf.getvalue(),
+        )
+
+        for artifact_name, artifact_content in artifacts:
+            if not artifact_content:
+                continue
+
+            package_zip.writestr(
+                f"{base_name}_{artifact_name}.md",
+                artifact_content,
+            )
+
+    buffer.seek(0)
+
+    return buffer
+
+
 def create_word_document(document_title, content_text, company, project_name):
     buffer = BytesIO()
     document = Document()
@@ -1237,6 +1504,7 @@ default_state = {
     "generated_executive_analysis": None,
     "generated_data_analysis": None,
     "generated_data_filename": "",
+    "generated_project_package": None,
 }
 
 for key, value in default_state.items():
@@ -2629,3 +2897,249 @@ language suitable for stakeholders.
             "Unexpected file processing "
             f"error: {error}"
         )
+
+
+# =========================================================
+# COMPLETE PROJECT PACKAGE EXPORT
+# =========================================================
+
+st.divider()
+
+st.header(
+    "📦 Complete Project Package Export"
+)
+
+st.caption(
+    "Combine the Business Analyst workflow into one "
+    "professional project package for stakeholder review, "
+    "portfolio demonstration, or project handoff."
+)
+
+package_requirements = st.session_state.get(
+    "generated_requirements"
+)
+
+package_user_stories = st.session_state.get(
+    "generated_user_stories"
+)
+
+package_test_cases = st.session_state.get(
+    "generated_test_cases"
+)
+
+package_rtm = st.session_state.get(
+    "generated_rtm"
+)
+
+package_executive_analysis = st.session_state.get(
+    "generated_executive_analysis"
+)
+
+package_data_analysis = st.session_state.get(
+    "generated_data_analysis"
+)
+
+package_data_filename = st.session_state.get(
+    "generated_data_filename",
+    "",
+)
+
+package_company = st.session_state.get(
+    "generated_company",
+    "",
+)
+
+package_project_name = st.session_state.get(
+    "generated_project_name",
+    "",
+)
+
+required_package_artifacts = {
+    "BRD": bool(
+        package_requirements
+    ),
+    "Jira Stories": bool(
+        package_user_stories
+    ),
+    "QA Tests": bool(
+        package_test_cases
+    ),
+    "RTM": bool(
+        package_rtm
+    ),
+    "Executive Analysis": bool(
+        package_executive_analysis
+    ),
+}
+
+package_ready = all(
+    required_package_artifacts.values()
+)
+
+status_columns = st.columns(
+    len(
+        required_package_artifacts
+    )
+)
+
+for index, (
+    artifact_label,
+    artifact_ready,
+) in enumerate(
+    required_package_artifacts.items()
+):
+
+    with status_columns[index]:
+        st.metric(
+            artifact_label,
+            (
+                "Ready"
+                if artifact_ready
+                else "Missing"
+            ),
+        )
+
+if package_data_analysis:
+    st.success(
+        "Optional Business Data Analysis is available "
+        "and will be included in the package."
+    )
+else:
+    st.info(
+        "Business Data Analysis is optional. Generate one "
+        "if you want it included in the final package."
+    )
+
+if not package_ready:
+    missing_artifacts = [
+        artifact_label
+        for artifact_label, artifact_ready
+        in required_package_artifacts.items()
+        if not artifact_ready
+    ]
+
+    st.warning(
+        "Complete these required artifacts before "
+        "building the package: "
+        + ", ".join(
+            missing_artifacts
+        )
+        + "."
+    )
+
+if st.button(
+    "📦 Build Complete Project Package",
+    use_container_width=True,
+    disabled=not package_ready,
+):
+    project_package_text = build_project_package_text(
+        package_company,
+        package_project_name,
+        package_requirements,
+        package_user_stories,
+        package_test_cases,
+        package_rtm,
+        package_executive_analysis,
+        package_data_analysis,
+        package_data_filename,
+    )
+
+    st.session_state[
+        "generated_project_package"
+    ] = project_package_text
+
+
+if st.session_state.get(
+    "generated_project_package"
+):
+    project_package_text = st.session_state[
+        "generated_project_package"
+    ]
+
+    st.success(
+        "Complete Project Package Built"
+    )
+
+    st.markdown(
+        "### Package Preview"
+    )
+
+    st.markdown(
+        project_package_text
+    )
+
+    st.subheader(
+        "📥 Download Complete Project Package"
+    )
+
+    show_download_buttons(
+        "Complete Business Analysis Project Package",
+        project_package_text,
+        (
+            package_company
+            or "Not provided"
+        ),
+        (
+            package_project_name
+            or "Business Analysis Project"
+        ),
+        "Complete_Project_Package",
+    )
+
+    package_artifacts = [
+        (
+            "Business_Requirements_Document",
+            package_requirements,
+        ),
+        (
+            "Jira_User_Stories",
+            package_user_stories,
+        ),
+        (
+            "QA_Test_Cases",
+            package_test_cases,
+        ),
+        (
+            "Requirements_Traceability_Matrix",
+            package_rtm,
+        ),
+        (
+            "Executive_Project_Analysis",
+            package_executive_analysis,
+        ),
+        (
+            "Business_Data_Analysis",
+            package_data_analysis,
+        ),
+    ]
+
+    package_zip = create_project_package_zip(
+        project_package_text,
+        (
+            package_company
+            or "Not provided"
+        ),
+        (
+            package_project_name
+            or "Business Analysis Project"
+        ),
+        package_artifacts,
+    )
+
+    package_base_name = safe_filename(
+        (
+            package_project_name
+            or "Business_Analysis_Project"
+        )
+    )
+
+    st.download_button(
+        label="🗂️ Download Complete ZIP Bundle",
+        data=package_zip,
+        file_name=(
+            f"{package_base_name}"
+            "_Complete_Project_Package.zip"
+        ),
+        mime="application/zip",
+        use_container_width=True,
+    )
